@@ -7,6 +7,22 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Non-blocking Damiao register reads, so one register can be read from many
+  motors in a single bus round trip instead of one blocking wait per motor:
+  `motor_handle_request_register` sends the read request without waiting, and
+  `motor_handle_get_cached_register_f32/u32` return the cached reply with its
+  age and a `fresh` flag (whether it answers the most recent request). The
+  getters return `0` (value written), `1` (no reply cached yet, not an error) or
+  `-1` (error). Exposed as `Motor.request_register(rid)` and
+  `Motor.get_cached_register_f32/u32(rid, fresh_only=True)` in Python and the
+  matching methods in C++; with `fresh_only` (the default) a reply left over
+  from an older request is never returned. Capability flag:
+  `register_nonblocking`. The blocking `get_register_f32/u32` are unchanged.
+- `DamiaoMotor::cached_register_value(rid)` returning a `CachedRegister`
+  (`value`, `age`, `fresh`) in `motor_vendor_damiao`.
+
 ## [0.5.6] - 2026-09-20
 
 ### Added

@@ -225,6 +225,37 @@ class Motor {
     check_rc(motor_handle_get_register_u32(ptr_, rid, timeout_ms, &out), "get_register_u32");
     return out;
   }
+  // Non-blocking register read: request_register() on many motors, poll
+  // feedback, then get_cached_register_*(). Returns {value, age_us}, or
+  // std::nullopt if no reply has arrived. With fresh_only (default), a reply
+  // left over from an older request (e.g. the latest one was lost) also gives
+  // std::nullopt, so a stale value is never returned as current.
+  void request_register(uint8_t rid) {
+    require_open();
+    check_rc(motor_handle_request_register(ptr_, rid), "request_register");
+  }
+  std::optional<std::pair<float, uint64_t>> get_cached_register_f32(uint8_t rid, bool fresh_only = true) {
+    require_open();
+    float out = 0.0f;
+    uint64_t age_us = 0;
+    uint8_t fresh = 0;
+    const int32_t rc = motor_handle_get_cached_register_f32(ptr_, rid, &out, &age_us, &fresh);
+    if (rc == 1) return std::nullopt;  // no reply ever cached -- not an error
+    check_rc(rc, "get_cached_register_f32");
+    if (fresh_only && !fresh) return std::nullopt;
+    return std::make_pair(out, age_us);
+  }
+  std::optional<std::pair<uint32_t, uint64_t>> get_cached_register_u32(uint8_t rid, bool fresh_only = true) {
+    require_open();
+    uint32_t out = 0;
+    uint64_t age_us = 0;
+    uint8_t fresh = 0;
+    const int32_t rc = motor_handle_get_cached_register_u32(ptr_, rid, &out, &age_us, &fresh);
+    if (rc == 1) return std::nullopt;  // no reply ever cached -- not an error
+    check_rc(rc, "get_cached_register_u32");
+    if (fresh_only && !fresh) return std::nullopt;
+    return std::make_pair(out, age_us);
+  }
 
   std::pair<uint8_t, uint8_t> robstride_ping() {
     require_open();

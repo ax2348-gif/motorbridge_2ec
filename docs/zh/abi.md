@@ -90,6 +90,20 @@ Damiao 寄存器接口：
 - `motor_handle_write_register_u32`
 - `motor_handle_get_register_f32`
 - `motor_handle_get_register_u32`
+- `motor_handle_request_register`
+- `motor_handle_get_cached_register_f32`
+- `motor_handle_get_cached_register_u32`
+
+非阻塞寄存器读取：先对每个电机调用 `motor_handle_request_register`，再轮询反馈
+（`motor_controller_poll_feedback_once`），然后调用
+`motor_handle_get_cached_register_f32/u32(motor, rid, &value, &age_us, &fresh)`。
+与其他 ABI 调用不同，这两个函数有三种返回值，请勿用 `rc != 0` 或 `rc < 0` 判断：
+
+- `0`：已有缓存回复，写入 `value`、`age_us`（回复到达至今的微秒数）和 `fresh`。
+  `fresh` 为 1 表示该回复对应最近一次请求，为 0 表示是更早请求的残留（例如最近
+  一次请求丢失）。将 `value` 视为当前值之前请先检查 `fresh`。
+- `1`：该寄存器从未收到回复，不写入任何值。
+- `-1`：错误（空指针、非 Damiao 电机或寄存器类型不符）。
 
 RobStride 扩展接口：
 

@@ -3,7 +3,7 @@ import ctypes.util
 import json
 import os
 import sys
-from ctypes import POINTER, Structure, c_char_p, c_float, c_int8, c_int32, c_uint8, c_uint16, c_uint32, c_void_p
+from ctypes import POINTER, Structure, c_char_p, c_float, c_int8, c_int32, c_uint8, c_uint16, c_uint32, c_uint64, c_void_p
 from pathlib import Path
 
 from .errors import AbiLoadError
@@ -181,6 +181,12 @@ class Abi:
         lib.motor_handle_get_register_f32.restype = c_int32
         lib.motor_handle_get_register_u32.argtypes = [c_void_p, c_uint8, c_uint32, POINTER(c_uint32)]
         lib.motor_handle_get_register_u32.restype = c_int32
+        lib.motor_handle_request_register.argtypes = [c_void_p, c_uint8]
+        lib.motor_handle_request_register.restype = c_int32
+        lib.motor_handle_get_cached_register_f32.argtypes = [c_void_p, c_uint8, POINTER(c_float), POINTER(c_uint64), POINTER(c_uint8)]
+        lib.motor_handle_get_cached_register_f32.restype = c_int32
+        lib.motor_handle_get_cached_register_u32.argtypes = [c_void_p, c_uint8, POINTER(c_uint32), POINTER(c_uint64), POINTER(c_uint8)]
+        lib.motor_handle_get_cached_register_u32.restype = c_int32
 
         lib.motor_handle_robstride_ping.argtypes = [c_void_p, POINTER(c_uint8), POINTER(c_uint8)]
         lib.motor_handle_robstride_ping.restype = c_int32

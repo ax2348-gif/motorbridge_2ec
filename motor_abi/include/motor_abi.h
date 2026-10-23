@@ -98,6 +98,16 @@ int32_t motor_handle_write_register_f32(MotorHandle* motor, uint8_t rid, float v
 int32_t motor_handle_write_register_u32(MotorHandle* motor, uint8_t rid, uint32_t value);
 int32_t motor_handle_get_register_f32(MotorHandle* motor, uint8_t rid, uint32_t timeout_ms, float* out_value);
 int32_t motor_handle_get_register_u32(MotorHandle* motor, uint8_t rid, uint32_t timeout_ms, uint32_t* out_value);
+/* Non-blocking register read: request_register(), poll feedback, then get_cached_*().
+   get_cached_* return codes -- 1 is NOT an error, so don't test rc != 0 or rc < 0:
+     0  value, age (us since the reply arrived) and out_fresh written; out_fresh is 1
+        if the reply answers the most recent request, 0 if it is left over from an
+        older one (e.g. the latest request was lost) -- check it before trusting value
+     1  no reply has ever arrived for this register; nothing written
+    -1  error (null pointer, non-Damiao motor, wrong register type) */
+int32_t motor_handle_request_register(MotorHandle* motor, uint8_t rid);
+int32_t motor_handle_get_cached_register_f32(MotorHandle* motor, uint8_t rid, float* out_value, uint64_t* out_age_us, uint8_t* out_fresh);
+int32_t motor_handle_get_cached_register_u32(MotorHandle* motor, uint8_t rid, uint32_t* out_value, uint64_t* out_age_us, uint8_t* out_fresh);
 
 int32_t motor_handle_robstride_ping(MotorHandle* motor, uint8_t* out_device_id, uint8_t* out_responder_id);
 int32_t motor_handle_robstride_ping_host_id(MotorHandle* motor, uint16_t host_id, uint32_t timeout_ms, uint8_t* out_device_id, uint8_t* out_responder_id);

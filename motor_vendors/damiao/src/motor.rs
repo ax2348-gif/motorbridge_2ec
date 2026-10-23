@@ -225,6 +225,18 @@ pub enum RegisterValue {
     UInt32(u32),
 }
 
+/// A cached register reply, as returned by `DamiaoMotor::cached_register_value`.
+#[derive(Debug, Clone, Copy)]
+pub struct CachedRegister {
+    pub value: RegisterValue,
+    /// Time since the reply arrived.
+    pub age: Duration,
+    /// True if the reply arrived after the most recent request for this
+    /// register. False means it answers an older request (or no request was
+    /// recorded), e.g. because the latest request was lost.
+    pub fresh: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MotorFeedbackState {
     pub can_id: u8,
@@ -260,6 +272,9 @@ struct ModeSwitchState {
 struct RegisterCache {
     values: HashMap<u8, RegisterValue>,
     reply_time: HashMap<u8, Instant>,
+    // When each register was last requested, so cached replies can be told
+    // apart from replies to an older request.
+    request_time: HashMap<u8, Instant>,
     write_ack_values: HashMap<u8, RegisterValue>,
     write_ack_time: HashMap<u8, Instant>,
 }
@@ -554,6 +569,13 @@ impl DamiaoMotor {
                 "unknown register rid {rid}"
             )));
         }
+        // Record the request time before sending, so a reply processed by the
+        // polling thread right after the send still counts as fresh.
+        self.register_cache
+            .lock()
+            .map_err(|_| MotorError::Io("register cache lock poisoned".to_string()))?
+            .request_time
+            .insert(rid, Instant::now());
         self.send_raw(0x7FF, encode_register_read_cmd(self.motor_id, rid))
     }
 
@@ -841,6 +863,27 @@ impl DamiaoMotor {
             ))),
         }
     }
+
+    /// Latest cached reply for `rid`, without sending anything or waiting.
+    /// Pair with `request_register_reading()` to read a register on many
+    /// motors at once: request on all of them, poll feedback, then read the
+    /// cache. Returns `None` if no reply has ever arrived. Check `fresh`
+    /// before trusting the value: a lost request leaves the previous reply
+    /// in the cache.
+    pub fn cached_register_value(&self, rid: u8) -> Result<Option<CachedRegister>> {
+        let cache = self
+            .register_cache
+            .lock()
+            .map_err(|_| MotorError::Io("register cache lock poisoned".to_string()))?;
+        Ok(match (cache.values.get(&rid), cache.reply_time.get(&rid)) {
+            (Some(value), Some(ts)) => Some(CachedRegister {
+                value: *value,
+                age: ts.elapsed(),
+                fresh: cache.request_time.get(&rid).is_some_and(|req| ts >= req),
+            }),
+            _ => None,
+        })
+    }
 }
 
 impl MotorDevice for DamiaoMotor {
@@ -924,6 +967,75 @@ mod tests {
             .get_register_u32(10, Duration::from_millis(1))
             .expect_err("timeout expected");
         assert!(matches!(err, MotorError::Timeout(_)));
+    }
+
+    #[test]
+    fn request_then_cached_register_reads_without_blocking() {
+        let bus_impl = Arc::new(MockBus::new());
+        let bus: Arc<dyn CanBus> = bus_impl.clone();
+        let motor = DamiaoMotor::new(0x01, 0x11, "4340P", bus).expect("create motor");
+
+        assert!(motor.cached_register_value(81).expect("cache").is_none());
+        motor.request_register_reading(81).expect("request");
+        {
+            let sent = bus_impl.sent.lock().expect("sent lock");
+            assert!(sent
+                .iter()
+                .any(|f| f.arbitration_id == 0x7FF && f.data == encode_register_read_cmd(0x01, 81)));
+        }
+        // Sending the request alone must not invent a value.
+        assert!(motor.cached_register_value(81).expect("cache").is_none());
+
+        let xout = (-0.0124f32).to_le_bytes();
+        motor
+            .process_feedback_frame_impl(CanFrame {
+                arbitration_id: 0x11,
+                data: [0x01, 0x00, 0x33, 81, xout[0], xout[1], xout[2], xout[3]],
+                dlc: 8,
+                is_extended: false,
+                is_rx: true,
+            })
+            .expect("process reply");
+
+        let cached = motor
+            .cached_register_value(81)
+            .expect("cache")
+            .expect("reply cached");
+        assert!(matches!(cached.value, RegisterValue::Float(v) if v == -0.0124));
+        assert!(cached.age < Duration::from_secs(1));
+        assert!(cached.fresh);
+        // Other registers stay empty.
+        assert!(motor.cached_register_value(80).expect("cache").is_none());
+
+        // A new request with no reply yet: the old value is still there but
+        // must no longer count as fresh.
+        motor.request_register_reading(81).expect("request again");
+        let cached = motor
+            .cached_register_value(81)
+            .expect("cache")
+            .expect("old reply still cached");
+        assert!(!cached.fresh);
+    }
+
+    #[test]
+    fn cached_register_reply_without_request_is_not_fresh() {
+        let bus: Arc<dyn CanBus> = Arc::new(MockBus::new());
+        let motor = DamiaoMotor::new(0x01, 0x11, "4340P", bus).expect("create motor");
+        let b = 2.0f32.to_le_bytes();
+        motor
+            .process_feedback_frame_impl(CanFrame {
+                arbitration_id: 0x11,
+                data: [0x01, 0x00, 0x33, 81, b[0], b[1], b[2], b[3]],
+                dlc: 8,
+                is_extended: false,
+                is_rx: true,
+            })
+            .expect("process reply");
+        let cached = motor
+            .cached_register_value(81)
+            .expect("cache")
+            .expect("reply cached");
+        assert!(!cached.fresh);
     }
 
     #[test]

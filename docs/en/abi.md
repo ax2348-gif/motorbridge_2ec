@@ -92,6 +92,22 @@ Damiao register APIs:
 - `motor_handle_write_register_u32`
 - `motor_handle_get_register_f32`
 - `motor_handle_get_register_u32`
+- `motor_handle_request_register`
+- `motor_handle_get_cached_register_f32`
+- `motor_handle_get_cached_register_u32`
+
+Non-blocking register reads: call `motor_handle_request_register` on each motor,
+poll feedback (`motor_controller_poll_feedback_once`), then read
+`motor_handle_get_cached_register_f32/u32(motor, rid, &value, &age_us, &fresh)`.
+Unlike every other ABI call, these getters have three return codes, so do not
+test `rc != 0` or `rc < 0`:
+
+- `0`: a reply is cached; `value`, `age_us` (µs since it arrived) and `fresh`
+  are written. `fresh` is 1 if the reply answers the most recent request and 0
+  if it is left over from an older one (for example, the latest request was
+  lost). Check `fresh` before treating `value` as current.
+- `1`: no reply has ever arrived for this register; nothing is written.
+- `-1`: error (null pointer, non-Damiao motor, or wrong register type).
 
 RobStride extensions:
 

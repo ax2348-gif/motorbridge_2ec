@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ctypes
-from ctypes import c_float, c_int8, c_uint8, c_uint16, c_uint32
+from ctypes import c_float, c_int8, c_uint8, c_uint16, c_uint32, c_uint64
 
 from .abi import CState, get_abi
 from .dm_device_runtime import ensure_dm_device_runtime
@@ -243,6 +243,50 @@ class Motor:
             "get_register_u32",
         )
         return int(out.value)
+
+    def request_register(self, rid: int) -> None:
+        """Send a Damiao register-read request without waiting for the reply.
+
+        Non-blocking counterpart of get_register_f32/u32: request on many motors,
+        call Controller.poll_feedback_once(), then read get_cached_register_*().
+        """
+        _ok(self._abi.lib.motor_handle_request_register(self._require_open(), rid), "request_register")
+
+    def _get_cached_register(self, fn, out, rid: int, fresh_only: bool, what: str):
+        age_us = c_uint64(0)
+        fresh = c_uint8(0)
+        rc = fn(self._require_open(), rid, ctypes.byref(out), ctypes.byref(age_us), ctypes.byref(fresh))
+        if rc == 1:  # no reply ever cached -- not an error
+            return None
+        _ok(rc, what)
+        if fresh_only and not fresh.value:
+            return None
+        return out.value, age_us.value / 1e6
+
+    def get_cached_register_f32(self, rid: int, fresh_only: bool = True) -> tuple[float, float] | None:
+        """Cached reply to request_register(rid) as (value, age_s), or None.
+
+        With fresh_only=True (default), returns None until a reply to the most
+        recent request has arrived, so a lost request never yields the previous
+        value. fresh_only=False returns the latest reply whatever request it
+        answered; age_s is the time since it arrived.
+        """
+        res = self._get_cached_register(
+            self._abi.lib.motor_handle_get_cached_register_f32, c_float(0.0), rid, fresh_only,
+            "get_cached_register_f32",
+        )
+        return None if res is None else (float(res[0]), res[1])
+
+    def get_cached_register_u32(self, rid: int, fresh_only: bool = True) -> tuple[int, float] | None:
+        """Cached reply to request_register(rid) as (value, age_s), or None.
+
+        Same freshness rules as get_cached_register_f32().
+        """
+        res = self._get_cached_register(
+            self._abi.lib.motor_handle_get_cached_register_u32, c_uint32(0), rid, fresh_only,
+            "get_cached_register_u32",
+        )
+        return None if res is None else (int(res[0]), res[1])
 
     def robstride_ping(self) -> tuple[int, int]:
         device_id = c_uint8(0)
