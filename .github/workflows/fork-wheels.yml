@@ -1,0 +1,104 @@
+# Prebuilt Python wheels for this fork, attached to a GitHub release (not PyPI).
+#
+# Trigger: push a tag named 2ec-<python version>, e.g. 2ec-0.5.6+2ec.1, matching
+# bindings/python/src/motorbridge/_version.py. The "2ec-" prefix keeps upstream's
+# v*-tag workflows (PyPI publish, ABI build) from running on fork releases.
+name: Fork wheels
+
+on:
+  push:
+    tags:
+      - "2ec-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    name: ${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04-arm, platform: linux, arch: aarch64 }  # the robot (native, no QEMU)
+          - { os: ubuntu-latest, platform: linux, arch: x86_64 }
+          - { os: macos-14, platform: macos, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cibuildwheel
+        run: python -m pip install --upgrade pip cibuildwheel==2.21.3
+
+      - name: Build wheels
+        env:
+          CIBW_BUILD: "cp312-* cp313-*"
+          CIBW_SKIP: "*musllinux* *i686* *pp*"
+          CIBW_ARCHS: ${{ matrix.arch }}
+          CIBW_BUILD_FRONTEND: pip
+          # Linux builds run in a manylinux container with the repo mounted at /project.
+          CIBW_ENVIRONMENT_LINUX: >-
+            MOTORBRIDGE_LIB=/project/target/release/libmotor_abi.so
+            MOTORBRIDGE_WS_GATEWAY_BIN=/project/target/release/ws_gateway
+            MOTOR_DM_DEVICE_BUNDLE=0
+          CIBW_BEFORE_ALL_LINUX: >
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal &&
+            . $HOME/.cargo/env &&
+            cd /project &&
+            cargo build -p motor_abi -p ws_gateway --release
+          CIBW_ENVIRONMENT_MACOS: >-
+            MOTORBRIDGE_LIB=${{ github.workspace }}/target/release/libmotor_abi.dylib
+            MOTORBRIDGE_WS_GATEWAY_BIN=${{ github.workspace }}/target/release/ws_gateway
+            MOTOR_DM_DEVICE_BUNDLE=0
+            MACOSX_DEPLOYMENT_TARGET=11.0
+          CIBW_BEFORE_ALL_MACOS: >
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal &&
+            . $HOME/.cargo/env &&
+            cd ${{ github.workspace }} &&
+            cargo build -p motor_abi -p ws_gateway --release
+          # Smoke test: the wheel's bundled ABI loads and exposes this fork's cached reads.
+          CIBW_TEST_COMMAND: >-
+            python -c "import motorbridge as m; from motorbridge.core import Motor;
+            assert hasattr(Motor, 'get_cached_register_f32'); print(m.__version__, m.abi_version())"
+        run: python -m cibuildwheel --platform ${{ matrix.platform }} bindings/python --output-dir dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  release:
+    needs: wheels
+    if: startsWith(github.ref, 'refs/tags/2ec-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: Check the tag matches the package version
+        run: |
+          want="${GITHUB_REF_NAME#2ec-}"
+          have="$(sed -nE 's/^VERSION = "(.*)"/\1/p' bindings/python/src/motorbridge/_version.py)"
+          test "$want" = "$have" || { echo "tag $GITHUB_REF_NAME != version $have"; exit 1; }
+
+      # Created with GITHUB_TOKEN, so upstream's release-triggered apt workflow does not run.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.whl --repo "$GITHUB_REPOSITORY" \
+            --title "motorbridge ${GITHUB_REF_NAME#2ec-} (2ec fork wheels)" \
+            --notes "Prebuilt wheels of the motorbridge_2ec fork (non-blocking register reads). Install with pip from these URLs; PyPI's motorbridge does not include the fork's changes."
