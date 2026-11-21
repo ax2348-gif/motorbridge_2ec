@@ -396,6 +396,27 @@ class Motor {
     return State{
         st.can_id, st.arbitration_id, st.status_code, st.pos, st.vel, st.torq, st.t_mos, st.t_rotor};
   }
+  // Damiao: the cached state with its age (us since the state frame arrived) and sequence
+  // number (state frames received so far), or std::nullopt before the first state frame.
+  // Damiao motors answer every control frame with a state frame, so a caller sending MIT
+  // frames every cycle can check the age instead of requesting feedback.
+  struct StateWithAge {
+    State state;
+    uint64_t age_us;
+    uint64_t seq;
+  };
+  std::optional<StateWithAge> get_state_with_age() const {
+    require_open();
+    MotorState st{};
+    uint64_t age_us = 0;
+    uint64_t seq = 0;
+    const int32_t rc = motor_handle_get_state_with_age(ptr_, &st, &age_us, &seq);
+    if (rc == 1) return std::nullopt;  // no state frame yet -- not an error
+    check_rc(rc, "get_state_with_age");
+    return StateWithAge{
+        State{st.can_id, st.arbitration_id, st.status_code, st.pos, st.vel, st.torq, st.t_mos, st.t_rotor},
+        age_us, seq};
+  }
 
  private:
   friend class Controller;

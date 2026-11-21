@@ -22,6 +22,18 @@ Versioning.
   `register_nonblocking`. The blocking `get_register_f32/u32` are unchanged.
 - `DamiaoMotor::cached_register_value(rid)` returning a `CachedRegister`
   (`value`, `age`, `fresh`) in `motor_vendor_damiao`.
+- Damiao state age: `motor_handle_get_state_with_age` returns the cached state
+  with its age (µs since the state frame arrived) and a sequence number (state
+  frames received so far), read under one lock; `0` (written), `1` (no state
+  frame yet, not an error) or `-1` (error). Damiao motors answer every control
+  frame (MIT, ...) with a state frame, so a caller sending one every cycle can
+  check the age instead of sending a feedback request (one CAN round trip less
+  per motor per cycle). Exposed as `Motor.get_state_with_age()` in Python and
+  C++. Capability flag: `state_age`. `motor_handle_get_state` is unchanged.
+  The age counts from when the frame was processed (with two bus drainers a
+  frame can be processed after a newer one: the state can be one frame older).
+- `DamiaoMotor::cached_state()` returning a `CachedState` (`state`, `age`,
+  `seq`) in `motor_vendor_damiao`.
 
 ## [0.5.6] - 2026-09-20
 

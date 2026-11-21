@@ -64,7 +64,7 @@ jobs:
           # Smoke test: the wheel's bundled ABI loads and exposes this fork's cached reads.
           CIBW_TEST_COMMAND: >-
             python -c "import motorbridge as m; from motorbridge.core import Motor;
-            assert hasattr(Motor, 'get_cached_register_f32'); print(m.__version__, m.abi_version())"
+            assert hasattr(Motor, 'get_cached_register_f32') and hasattr(Motor, 'get_state_with_age'); print(m.__version__, m.abi_version())"
         run: python -m cibuildwheel --platform ${{ matrix.platform }} bindings/python --output-dir dist
 
       - uses: actions/upload-artifact@v4

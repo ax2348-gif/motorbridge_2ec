@@ -237,6 +237,19 @@ pub struct CachedRegister {
     pub fresh: bool,
 }
 
+/// The latest state frame, as returned by `DamiaoMotor::cached_state`.
+#[derive(Debug, Clone, Copy)]
+pub struct CachedState {
+    pub state: MotorFeedbackState,
+    /// Time since the state frame arrived.
+    pub age: Duration,
+    /// State frames received since the motor was created (this one included).
+    /// Every state frame counts, whatever prompted it (a feedback request or
+    /// a control frame such as MIT), so a caller can tell whether any arrived
+    /// between two reads.
+    pub seq: u64,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MotorFeedbackState {
     pub can_id: u8,
@@ -256,11 +269,19 @@ pub struct DamiaoMotor {
     pub model: String,
     bus: Arc<dyn CanBus>,
     limits: PvTLimits,
-    state: Mutex<Option<(MotorFeedbackState, Instant)>>,
+    state: Mutex<StateSlot>,
     // Software-side guard for set-zero sequencing:
     // set_zero_position() is allowed only after disable() was issued.
     disabled_hint: AtomicBool,
     register_cache: Mutex<RegisterCache>,
+}
+
+/// The latest decoded state frame (with when it arrived) and how many have
+/// arrived, under one lock so the two always agree.
+#[derive(Default)]
+struct StateSlot {
+    latest: Option<(MotorFeedbackState, Instant)>,
+    seq: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -339,7 +360,7 @@ impl DamiaoMotor {
             model: model.to_string(),
             bus,
             limits: PvTLimits::from_spec(spec),
-            state: Mutex::new(None),
+            state: Mutex::new(StateSlot::default()),
             disabled_hint: AtomicBool::new(true),
             register_cache: Mutex::new(RegisterCache::default()),
         })
@@ -764,7 +785,26 @@ impl DamiaoMotor {
         self.state
             .lock()
             .ok()
-            .and_then(|s| s.map(|(state, _)| state))
+            .and_then(|s| s.latest.map(|(state, _)| state))
+    }
+
+    /// The latest state frame with its age and sequence number, without
+    /// sending anything or waiting; `None` if no state frame has arrived yet.
+    /// The age tells a caller whether the state is current: Damiao motors
+    /// answer every control frame (MIT, pos-vel, ...) and every feedback
+    /// request with a state frame, and all of them land here, so a caller
+    /// that sends control frames can skip the feedback request and check the
+    /// age instead.
+    pub fn cached_state(&self) -> Result<Option<CachedState>> {
+        let slot = self
+            .state
+            .lock()
+            .map_err(|_| MotorError::Io("state lock poisoned".to_string()))?;
+        Ok(slot.latest.map(|(state, ts)| CachedState {
+            state,
+            age: ts.elapsed(),
+            seq: slot.seq,
+        }))
     }
 
     pub fn request_fresh_state(&self, timeout: Duration) -> Result<Option<MotorFeedbackState>> {
@@ -776,8 +816,7 @@ impl DamiaoMotor {
                 .state
                 .lock()
                 .map_err(|_| MotorError::Io("state lock poisoned".to_string()))?
-                .as_ref()
-                .copied()
+                .latest
             {
                 if ts >= request_at {
                     return Ok(Some(state));
@@ -849,10 +888,12 @@ impl DamiaoMotor {
             t_mos: decoded.t_mos,
             t_rotor: decoded.t_rotor,
         };
-        self.state
+        let mut slot = self
+            .state
             .lock()
-            .map_err(|_| MotorError::Io("state lock poisoned".to_string()))?
-            .replace((state, Instant::now()));
+            .map_err(|_| MotorError::Io("state lock poisoned".to_string()))?;
+        slot.latest = Some((state, Instant::now()));
+        slot.seq = slot.seq.wrapping_add(1);
         Ok(())
     }
     pub fn get_register_f32(&self, rid: u8, timeout: Duration) -> Result<f32> {
@@ -1036,6 +1077,56 @@ mod tests {
             .expect("cache")
             .expect("reply cached");
         assert!(!cached.fresh);
+    }
+
+    fn state_frame(status: u8, t_mos: u8) -> CanFrame {
+        CanFrame {
+            arbitration_id: 0x11,
+            data: [(status << 4) | 0x01, 0x80, 0x00, 0x80, 0x08, 0x00, t_mos, 30],
+            dlc: 8,
+            is_extended: false,
+            is_rx: true,
+        }
+    }
+
+    #[test]
+    fn cached_state_reports_age_and_counts_every_state_frame() {
+        let bus: Arc<dyn CanBus> = Arc::new(MockBus::new());
+        let motor = DamiaoMotor::new(0x01, 0x11, "4340P", bus).expect("create motor");
+        assert!(motor.cached_state().expect("state").is_none());
+
+        // A state frame that answers a control frame (no feedback request sent).
+        motor.process_feedback_frame_impl(state_frame(1, 35)).expect("state frame");
+        let first = motor.cached_state().expect("state").expect("state cached");
+        assert_eq!((first.seq, first.state.status_code, first.state.t_mos), (1, 1, 35.0));
+        assert!(first.age < Duration::from_secs(1));
+
+        // Age grows while nothing arrives; the sequence number does not move.
+        std::thread::sleep(Duration::from_millis(5));
+        let later = motor.cached_state().expect("state").expect("state cached");
+        assert_eq!(later.seq, 1);
+        assert!(later.age >= Duration::from_millis(5) && later.age > first.age);
+
+        // The next state frame replaces it: age restarts, seq counts it.
+        motor.process_feedback_frame_impl(state_frame(1, 36)).expect("state frame");
+        let next = motor.cached_state().expect("state").expect("state cached");
+        assert_eq!((next.seq, next.state.t_mos), (2, 36.0));
+        assert!(next.age < later.age);
+        assert_eq!(motor.latest_state().expect("latest").t_mos, 36.0);
+
+        // Register replies are not state frames: neither seq nor state change.
+        let b = 1.0f32.to_le_bytes();
+        motor
+            .process_feedback_frame_impl(CanFrame {
+                arbitration_id: 0x11,
+                data: [0x01, 0x00, 0x33, 81, b[0], b[1], b[2], b[3]],
+                dlc: 8,
+                is_extended: false,
+                is_rx: true,
+            })
+            .expect("register reply");
+        let after_reg = motor.cached_state().expect("state").expect("state cached");
+        assert_eq!((after_reg.seq, after_reg.state.t_mos), (2, 36.0));
     }
 
     #[test]

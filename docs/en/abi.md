@@ -56,6 +56,24 @@ Common control/state APIs:
 - `motor_handle_set_can_timeout_ms`
 - `motor_handle_store_parameters`
 - `motor_handle_get_state`
+- `motor_handle_get_state_with_age` (Damiao)
+
+`motor_handle_get_state_with_age(motor, &state, &age_us, &seq)` returns the
+cached state together with its age (µs since the state frame arrived) and a
+sequence number (state frames received since the motor was added), read under
+one lock. Damiao motors answer every control frame (MIT, pos-vel, ...) and
+every feedback request with a state frame, all cached in the same place, so a
+caller that sends a control frame every cycle can skip
+`motor_handle_request_feedback` and check the age instead. Like the cached
+register getters it has three return codes, so do not test `rc != 0` or
+`rc < 0`: `0` (state, age and seq written), `1` (no state frame yet; `state` is
+written with `has_value = 0`, nothing else) and `-1` (error: null pointer or a
+non-Damiao motor). Capability flag: `state_age`. The age counts from when the
+frame was processed into the cache: with the background poller and
+`motor_handle_poll_feedback_once` both draining the bus, a frame can be
+processed after a newer one from the same motor, so the state can be one frame
+older than its age says (an age older than some instant still means that no
+state frame at all was processed since).
 
 ## Vendor Entry Points
 

@@ -444,13 +444,42 @@ class Motor:
         _ok(self._abi.lib.motor_handle_get_state(self._require_open(), ctypes.byref(st)), "get_state")
         if not st.has_value:
             return None
-        return MotorState(
-            can_id=int(st.can_id),
-            arbitration_id=int(st.arbitration_id),
-            status_code=int(st.status_code),
-            pos=float(st.pos),
-            vel=float(st.vel),
-            torq=float(st.torq),
-            t_mos=float(st.t_mos),
-            t_rotor=float(st.t_rotor),
+        return _motor_state(st)
+
+    def get_state_with_age(self) -> tuple[MotorState, float, int] | None:
+        """Damiao: the cached state as (state, age_s, seq), or None before the first state frame.
+
+        age_s is the time since the state frame arrived; seq counts the state frames received
+        so far (this one included). Nothing is sent or waited for: call
+        Controller.poll_feedback_once() first. Damiao motors answer every control frame (MIT,
+        ...) and every request_feedback() with a state frame, all cached in the same place, so
+        a caller sending MIT frames every cycle can check age_s instead of requesting feedback.
+        age_s counts from when the frame was processed: with the background poller and
+        poll_feedback_once() both draining the bus, a frame can be processed after a newer one,
+        so the state can be one frame older than age_s says (an age older than some instant still
+        means no state frame was processed since).
+        Raises CallError for a non-Damiao motor.
+        """
+        st = CState()
+        age_us = c_uint64(0)
+        seq = c_uint64(0)
+        rc = self._abi.lib.motor_handle_get_state_with_age(
+            self._require_open(), ctypes.byref(st), ctypes.byref(age_us), ctypes.byref(seq)
         )
+        if rc == 1:  # no state frame yet -- not an error
+            return None
+        _ok(rc, "get_state_with_age")
+        return _motor_state(st), age_us.value / 1e6, int(seq.value)
+
+
+def _motor_state(st: CState) -> MotorState:
+    return MotorState(
+        can_id=int(st.can_id),
+        arbitration_id=int(st.arbitration_id),
+        status_code=int(st.status_code),
+        pos=float(st.pos),
+        vel=float(st.vel),
+        torq=float(st.torq),
+        t_mos=float(st.t_mos),
+        t_rotor=float(st.t_rotor),
+    )

@@ -53,6 +53,16 @@ ABI 对外保持一套统一控制接口。
 - `motor_handle_set_can_timeout_ms`
 - `motor_handle_store_parameters`
 - `motor_handle_get_state`
+- `motor_handle_get_state_with_age`（Damiao）
+
+`motor_handle_get_state_with_age(motor, &state, &age_us, &seq)` 在同一把锁下返回缓存的状态、
+其年龄（状态帧到达后经过的微秒数）和序号（电机加入后收到的状态帧数）。Damiao 电机对每个控制帧
+（MIT、pos-vel 等）和每个反馈请求都回复状态帧，且都写入同一缓存；因此每周期都发送控制帧的调用方
+可以不再发 `motor_handle_request_feedback`，改为检查年龄。与缓存寄存器读取函数一样有三种返回值，
+不要用 `rc != 0` 或 `rc < 0` 判断：`0`（已写入状态、年龄和序号）、`1`（尚无状态帧；`state` 以
+`has_value = 0` 写入，其余不写）、`-1`（错误：空指针或非 Damiao 电机）。能力标志：`state_age`。年龄从帧被处理（写入缓存）时算起：后台轮询线程与
+`motor_handle_poll_feedback_once` 同时读取总线时，同一电机的旧帧可能在新帧之后被处理，因此状态可能比
+其年龄所示早一帧（但年龄大于某时刻仍表示此后没有处理过任何状态帧）。
 
 ## 厂商入口
 

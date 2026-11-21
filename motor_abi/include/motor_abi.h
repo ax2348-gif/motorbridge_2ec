@@ -127,6 +127,19 @@ int32_t motor_handle_robstride_get_param_u32(MotorHandle* motor, uint16_t param_
 int32_t motor_handle_robstride_get_param_f32(MotorHandle* motor, uint16_t param_id, uint32_t timeout_ms, float* out_value);
 
 int32_t motor_handle_get_state(MotorHandle* motor, MotorState* out_state);
+/* Damiao: the cached state with its age and sequence number, without sending or waiting.
+   Damiao motors answer every control frame (MIT, ...) and every feedback request with a
+   state frame, all cached in the same place; the age says whether that cache is current.
+   The age counts from when the frame was processed: with the background poller and
+   motor_handle_poll_feedback_once both draining the bus, a frame can be processed after a
+   newer one, so the state can be one frame older than its age says (an age older than some
+   instant still means no state frame was processed since).
+   Return codes -- 1 is NOT an error, so don't test rc != 0 or rc < 0:
+     0  out_state (has_value = 1), out_age_us (us since the state frame arrived) and out_seq
+        (state frames received since the motor was added) written
+     1  no state frame yet; out_state written with has_value = 0, nothing else written
+    -1  error (null pointer, non-Damiao motor) */
+int32_t motor_handle_get_state_with_age(MotorHandle* motor, MotorState* out_state, uint64_t* out_age_us, uint64_t* out_seq);
 
 int32_t motor_handle_damiao_get_param_f32(MotorHandle* motor, uint16_t param_id, uint32_t timeout_ms, float* out_value);
 int32_t motor_handle_damiao_get_param_u32(MotorHandle* motor, uint16_t param_id, uint32_t timeout_ms, uint32_t* out_value);
